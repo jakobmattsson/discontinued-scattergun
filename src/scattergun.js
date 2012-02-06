@@ -11,36 +11,49 @@ if (process.argv.length < 3) {
   process.exit(1);
 }
 
-(function () {
-  var files = [], restarting = false, me = arguments.callee, processSelf;
-  sys.debug('Scattergun starting ' + process.argv[2]);
-  processSelf = child_process.spawn("node", [process.argv[2]]);
-  processSelf.stdout.addListener('data', function (data) {
-    process.stdout.write(data);
-  });
-  processSelf.stderr.addListener('data', function (data) {
-    sys.print(data);
-  });
-  processSelf.addListener('exit', function (code) {
-    if (!restarting) {
-      process.exit(0);
-    }
-    files.forEach(fs.unwatchFile);
-    me();
-    restarting = false;
-  });
+var watchedFiles = [];
+var watch = function(callback) {
+  watchedFiles.forEach(fs.unwatchFile);  
   child_process.exec('find . | egrep "' + toGrep + '"', function (err, out) {
-    files = out.trim().split("\n");
-    files.forEach(function (file) {
+    watchedFiles = out.trim().split("\n");
+    watchedFiles.forEach(function (file) {
       sys.debug("           watching " + file);
       fs.watchFile(file, {interval : 500}, function (curr, prev) {
         if (curr.mtime.valueOf() !== prev.mtime.valueOf() || 
             curr.ctime.valueOf() !== prev.ctime.valueOf()) {
-          sys.debug('Scattergun detected changed file at ' + file);
-          restarting = true;
-          processSelf.kill();
+            callback(file);
         }
       });
     });
-  });	
-}());
+  });
+};
+
+var startChild = function () {
+  var child = child_process.spawn("node", [process.argv[2]]);
+  child.stdout.addListener('data', function (data) {
+    process.stdout.write(data);
+  });
+  child.stderr.addListener('data', function (data) {
+    sys.print(data);
+  });
+  child.addListener('exit', function (code) {
+    if (code == 0) {
+      process.exit(0);
+    } else if (code == 1) {
+      sys.debug('Scattergun waiting for the error to be fixed');
+      watch(function (file) {
+        sys.debug('Scattergun detected change in file ' + file);
+        startChild();
+      });
+    } else {
+      startChild();
+    }
+  });
+  watch(function (file) {
+    sys.debug('Scattergun detected change in file ' + file);
+    child.kill();
+  });
+  sys.debug('Scattergun starting ' + process.argv[2]);
+};
+
+startChild();
